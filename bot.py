@@ -1,8 +1,8 @@
 """
-Paper Trading Bot - Trend Pullback (RSI-2) on gold + NASDAQ
+Paper Trading Bot - Trend Pullback (RSI-2) on 6 markets (US indices, DAX, gold)
 
 Simulated trades only. No broker, no real money.
-- Daily candles from Yahoo Finance: ^NDX (Nasdaq-100 index) and GC=F (gold futures)
+- Daily candles from Yahoo Finance (index levels and gold futures)
 - Strategy chosen from 25 years of walk-forward testing (see research_daily.py)
 - Keeps a paper account in state.json; backfills ~4 years of trades on first run (marked "Backfill")
 - Safety switch pauses new trades automatically if live results fall apart
@@ -32,33 +32,35 @@ STATE_FILE = os.path.join(HERE, "state.json")
 DASHBOARD_FILE = os.path.join(HERE, "dashboard.html")
 PORT = 8765
 POLL_SECONDS = 300
-STATE_VERSION = 3
+STATE_VERSION = 4
 
 STRATEGY = {
     "name": "Trend Pullback (RSI-2)",
     "summary": "Buys short dips inside a long-term uptrend, sells on the bounce",
     "rules": [
         "Only trade in an uptrend: daily close above its 200-day average (buys only)",
-        "Buy signal: 2-day RSI closes below 10 (a sharp short-term dip); buy at the next day's open",
+        "Buy signal: 2-day RSI closes below 20 (a short-term dip); buy at the next day's open",
         "Sell when the close is back above the 5-day average (sell at the next open)",
         "Time exit: sell after 10 days if it hasn't bounced",
         "Safety stop: 4x the daily ATR below the entry price",
         "Risk 0.5% of the starting balance per trade (position size set by the safety stop)",
+        "Trades 6 markets (NASDAQ 100, S&P 500, Dow, Russell 2000, DAX, gold); max 4 open trades at once",
         "Safety switch: pauses new trades at -8% drawdown, or if after 20+ live trades the win rate "
         "drops below 50% or the profit factor below 1.0",
     ],
-    "evidence": "25-year walk-forward test: NASDAQ 68% wins (PF 1.42, 203 trades), gold 62% wins (PF 1.43, 173 trades)",
+    "evidence": "25-year walk-forward test: 63-76% wins per market in both halves, about 80 trades a year across the 6 markets",
 }
 
 SETTINGS = {
     "initial_balance": 100000.0,
     "risk_pct": 0.5,
     "rsi_len": 2,
-    "rsi_buy": 10,
+    "rsi_buy": 20,
     "trend_ma": 200,
     "exit_ma": 5,
     "max_days": 10,
     "stop_atr": 4.0,
+    "max_open": 4,
     "max_drawdown_pct": 8.0,
     "check_after_trades": 20,
     "min_win_rate": 50.0,
@@ -67,6 +69,10 @@ SETTINGS = {
 
 MARKETS = {
     "NASDAQ": {"label": "NASDAQ 100", "ticker": "^NDX", "tz": "America/New_York", "cost_pct": 0.02},
+    "SP500": {"label": "S&P 500", "ticker": "^GSPC", "tz": "America/New_York", "cost_pct": 0.02},
+    "DOW": {"label": "Dow Jones (US30)", "ticker": "^DJI", "tz": "America/New_York", "cost_pct": 0.03},
+    "RUSSELL": {"label": "Russell 2000", "ticker": "^RUT", "tz": "America/New_York", "cost_pct": 0.04},
+    "DAX": {"label": "DAX 40 (GER40)", "ticker": "^GDAXI", "tz": "Europe/Berlin", "cost_pct": 0.03},
     "GOLD": {"label": "Gold", "ticker": "GC=F", "tz": "America/New_York", "cost_pct": 0.03},
 }
 
@@ -209,40 +215,45 @@ def process_day(state, key, mk, ms, d, bar):
         state["halted"] = pause
     if pause:
         return
+    busy = sum(1 for m in state["markets"].values() if m["position"] or m["pending_entry"])
+    if busy >= SETTINGS["max_open"]:
+        return
     if bar["Close"] > bar["trend_ma"] and bar["rsi"] < SETTINGS["rsi_buy"]:
         ms["pending_entry"] = {"date": d, "atr": float(bar["atr"]), "rsi": float(bar["rsi"])}
 
 
 def run_cycle(state):
-    for key, mk in MARKETS.items():
-        df = fetch(mk["ticker"])
-        ms = state["markets"][key]
-        today = datetime.now(ZoneInfo(mk["tz"])).date().isoformat()
-        start = df.index[SETTINGS["trend_ma"] + 5]
-        with LOCK:
-            for d, bar in df.iterrows():
-                if d < start or (ms["last_done"] and d <= ms["last_done"]):
+    frames = {key: fetch(mk["ticker"]) for key, mk in MARKETS.items()}
+    today = {key: datetime.now(ZoneInfo(mk["tz"])).date().isoformat() for key, mk in MARKETS.items()}
+    with LOCK:
+        # Walk all markets day by day together, so the max-open-trades cap works across markets
+        dates = sorted(set().union(*[set(df.index) for df in frames.values()]))
+        for d in dates:
+            for key, mk in MARKETS.items():
+                df, ms = frames[key], state["markets"][key]
+                if d not in df.index or d < df.index[SETTINGS["trend_ma"] + 5]:
                     continue
-                if d >= today:          # today's candle is still forming
-                    break
-                process_day(state, key, mk, ms, d, bar)
+                if (ms["last_done"] and d <= ms["last_done"]) or d >= today[key]:
+                    continue    # already processed, or today's candle is still forming
+                process_day(state, key, mk, ms, d, df.loc[d])
                 ms["last_done"] = d
+        for key, mk in MARKETS.items():
+            df, ms = frames[key], state["markets"][key]
             # Today's open is already known: fill pending orders at it right away
-            if df.index[-1] >= today:
+            if df.index[-1] >= today[key]:
                 d, bar = df.index[-1], df.iloc[-1]
                 if ms["pending_entry"] and not ms["position"]:
                     open_position(state, key, mk, ms, d, bar["Open"])
                 elif ms["pending_exit"] and ms["position"] and ms["position"]["entry_date"] < d:
                     close_position(state, key, mk, ms, d, bar["Open"], ms["pending_exit"])
             last = df.iloc[-1]
-            done = df[df.index < today].iloc[-1]
+            done = df[df.index < today[key]].iloc[-1]
             ms["info"] = {
                 "price": round(float(last["Close"]), 2), "price_date": df.index[-1],
                 "rsi": round(float(done["rsi"]), 1), "trend_ma": round(float(done["trend_ma"]), 2),
                 "uptrend": bool(done["Close"] > done["trend_ma"]), "exit_ma": round(float(done["exit_ma"]), 2),
-                "as_of": df[df.index < today].index[-1],
+                "as_of": df[df.index < today[key]].index[-1],
             }
-    with LOCK:
         save_state(state)
 
 

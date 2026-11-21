@@ -1,6 +1,6 @@
 # Paper Trading Bot
 
-Runs **Trend Pullback (RSI-2)** on NASDAQ 100 and gold with a simulated $100,000 account.
+Runs **Trend Pullback (RSI-2)** on 6 markets (NASDAQ 100, S&P 500, Dow, Russell 2000, DAX, gold) with a simulated $100,000 account.
 No broker, no real money: every trade is simulated. It runs every 15 minutes on GitHub Actions,
 so no computer needs to be on.
 
@@ -11,10 +11,10 @@ so no computer needs to be on.
 Buys short, sharp dips inside a long-term uptrend and sells on the bounce.
 
 1. Only trade in an uptrend: daily close above the 200-day average (buys only)
-2. Buy when the 2-day RSI closes below 10; buy at the next day's open
+2. Buy when the 2-day RSI closes below 20; buy at the next day's open
 3. Sell when the close is back above the 5-day average (at the next open), or after 10 days
 4. Safety stop at 4× the daily ATR below the entry
-5. Risk 0.5% of the starting balance per trade
+5. Risk 0.5% of the starting balance per trade; max 4 open trades at once
 
 ### Why this strategy
 
@@ -27,7 +27,12 @@ Buys short, sharp dips inside a long-term uptrend and sells on the bounce.
 | NASDAQ 100 | 203 | 67.8% / 68.1% | 1.42 |
 | Gold | 173 | 63.3% / 61.3% | 1.43 |
 
-It trades rarely (about 7–8 times a year per market) and only when the market is in an uptrend.
+`research_multi.py` then tested the same rules on 11 markets. With the dip threshold at RSI below 20, six markets
+passed (60%+ wins and profit factor above 1.1 in both halves): NASDAQ 100, S&P 500, Dow, Russell 2000, DAX and gold.
+Silver, oil, EUR/USD, the Nikkei and FTSE (at RSI 20) and nearly all short-selling versions failed, so they're left out.
+
+Backfill over the last 4 years with all 6 markets: **365 trades (~7–8 a month), 71.2% win rate, profit factor 1.76,
++12.4%, max drawdown 1.6%.** It only buys in uptrends, so there can be long stretches with no trades.
 
 ## Safety switch (fully automatic)
 
@@ -43,6 +48,6 @@ New trades are paused automatically, with the reason shown on the dashboard, if:
 
 ## Good to know
 
-- Data: Yahoo Finance daily candles for ^NDX (Nasdaq-100 index) and GC=F (gold futures).
+- Data: Yahoo Finance daily candles (^NDX, ^GSPC, ^DJI, ^RUT, ^GDAXI index levels and GC=F gold futures).
 - Fills at the next day's open with simulated costs (0.02% NASDAQ, 0.03% gold per side pair).
 - The "Backfill" trades are a backtest of the last ~4 years; they don't count toward the paper balance.
