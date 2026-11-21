@@ -1,0 +1,209 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Paper Trading Bot</title>
+<style>
+:root {
+  --bg: #f6f7f9; --card: #ffffff; --text: #16181d; --muted: #6b7280; --border: #e5e7eb;
+  --green: #0f9d58; --red: #d93025; --accent: #2563eb; --chip: #eef2ff;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --bg: #0f1115; --card: #171a21; --text: #e8eaed; --muted: #9aa0a6; --border: #2a2f3a;
+          --green: #34c77b; --red: #f07167; --accent: #7aa2ff; --chip: #1f2540; }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text);
+       font: 14px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+.wrap { max-width: 1200px; margin: 0 auto; padding: 20px 16px 40px; }
+header { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 16px; }
+h1 { font-size: 20px; margin: 0; }
+.sub { color: var(--muted); font-size: 13px; }
+.pill { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: 999px;
+        background: var(--card); border: 1px solid var(--border); font-size: 12px; }
+.dot { width: 8px; height: 8px; border-radius: 50%; background: var(--green); }
+.dot.err { background: var(--red); }
+.toggle { display: inline-flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+.toggle button { border: 0; background: var(--card); color: var(--text); padding: 6px 12px; cursor: pointer; font: inherit; font-size: 13px; }
+.toggle button.on { background: var(--accent); color: #fff; }
+.grid { display: grid; gap: 12px; }
+.kpis { grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); margin-bottom: 12px; }
+.card { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 14px 16px; }
+.kpi .label { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
+.kpi .value { font-size: 26px; font-weight: 650; margin-top: 2px; font-variant-numeric: tabular-nums; }
+.kpi .note { color: var(--muted); font-size: 12px; }
+.kpi.big .value { font-size: 34px; }
+.pos { color: var(--green); } .neg { color: var(--red); }
+.two { grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr); margin-bottom: 12px; }
+@media (max-width: 800px) { .two { grid-template-columns: 1fr; } }
+h2 { font-size: 15px; margin: 0 0 10px; }
+.chip { display: inline-block; background: var(--chip); color: var(--accent); border-radius: 6px; padding: 2px 8px; font-size: 12px; font-weight: 600; }
+ol { margin: 8px 0 0; padding-left: 20px; } ol li { margin: 3px 0; }
+.markets { grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); }
+.mrow { display: flex; justify-content: space-between; padding: 4px 0; border-bottom: 1px dashed var(--border); font-size: 13px; }
+.mrow:last-child { border-bottom: 0; }
+.mrow span:first-child { color: var(--muted); }
+table { width: 100%; border-collapse: collapse; font-size: 13px; font-variant-numeric: tabular-nums; }
+th, td { text-align: left; padding: 7px 8px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+th { color: var(--muted); font-weight: 600; font-size: 12px; position: sticky; top: 0; background: var(--card); }
+.tablewrap { overflow-x: auto; max-height: 520px; overflow-y: auto; }
+.badge { font-size: 11px; padding: 1px 6px; border-radius: 5px; border: 1px solid var(--border); color: var(--muted); }
+.badge.paper { border-color: var(--accent); color: var(--accent); }
+.side-LONG { color: var(--green); font-weight: 600; } .side-SHORT { color: var(--red); font-weight: 600; }
+svg { width: 100%; height: 140px; display: block; }
+.empty { color: var(--muted); padding: 12px 0; }
+.warn { margin-top: 16px; color: var(--muted); font-size: 12px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div>
+      <h1>Paper Trading Bot</h1>
+      <div class="sub">Simulated account · no real money · gold &amp; NASDAQ</div>
+    </div>
+    <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">
+      <div class="toggle" id="toggle">
+        <button data-v="all" class="on">All trades (incl. 60-day backfill)</button>
+        <button data-v="paper">Paper trades since start</button>
+      </div>
+      <span class="pill"><span class="dot" id="dot"></span><span id="status">Loading…</span></span>
+    </div>
+  </header>
+
+  <div class="grid kpis" id="kpis"></div>
+
+  <div class="grid two">
+    <div class="card">
+      <h2>Equity curve <span class="sub" id="eqnote"></span></h2>
+      <svg id="eq" viewBox="0 0 600 140" preserveAspectRatio="none"></svg>
+    </div>
+    <div class="card">
+      <h2>Strategy in use</h2>
+      <div><span class="chip" id="sname"></span></div>
+      <div class="sub" id="ssum" style="margin-top:6px"></div>
+      <ol id="srules"></ol>
+    </div>
+  </div>
+
+  <div class="grid markets" id="markets" style="margin-bottom:12px"></div>
+
+  <div class="card" style="margin-bottom:12px">
+    <h2>Open positions</h2>
+    <div id="positions"></div>
+  </div>
+
+  <div class="card">
+    <h2>Trade log</h2>
+    <div class="tablewrap"><table id="trades"></table></div>
+  </div>
+
+  <div class="warn">
+    Data: Yahoo Finance gold (GC=F) and Nasdaq-100 (NQ=F) futures, 15-minute candles.
+    Fills include a simulated spread. Backfilled trades are a backtest of the last ~60 days and are kept separate from the paper account.
+  </div>
+</div>
+
+<script>
+let view = "all", data = null;
+const $ = id => document.getElementById(id);
+const money = v => (v < 0 ? "−$" : "$") + Math.abs(v).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2});
+const cls = v => v > 0 ? "pos" : v < 0 ? "neg" : "";
+const fmtTime = iso => iso ? new Date(iso).toLocaleString(undefined, {month: "short", day: "numeric", hour: "2-digit", minute: "2-digit"}) : "—";
+const esc = s => String(s).replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+
+document.querySelectorAll("#toggle button").forEach(b => b.onclick = () => {
+  view = b.dataset.v;
+  document.querySelectorAll("#toggle button").forEach(x => x.classList.toggle("on", x === b));
+  render();
+});
+
+function kpi(label, value, note, extra = "", big = false) {
+  return `<div class="card kpi ${big ? "big" : ""}"><div class="label">${label}</div>
+          <div class="value ${extra}">${value}</div><div class="note">${note || "&nbsp;"}</div></div>`;
+}
+
+function render() {
+  if (!data) return;
+  const v = data.views[view], o = v.overall;
+  const trades = data.trades.filter(t => view === "all" || t.mode === "paper");
+  const s = data.status;
+  $("dot").classList.toggle("err", !!s.last_error);
+  $("status").textContent = s.last_error ? "Data error: " + s.last_error
+    : (data.halted ? "HALTED (max drawdown)" : "Running") + " · updated " + fmtTime(s.last_check) + " · next " + fmtTime(s.next_check);
+
+  $("kpis").innerHTML =
+    kpi("Win rate", o.win_rate == null ? "—" : o.win_rate + "%", `${o.wins} wins · ${o.losses} losses`, "", true) +
+    kpi("Trades", o.trades, view === "paper" ? "since " + fmtTime(data.started_at) : "last ~60 days + paper") +
+    kpi("Profit factor", o.profit_factor ?? "—", "gross win ÷ gross loss") +
+    kpi("Net P/L", money(o.net_pnl), o.avg_r == null ? "" : "avg " + o.avg_r + "R per trade", cls(o.net_pnl)) +
+    kpi("Max drawdown", o.max_dd_pct + "%", "limit " + data.settings.max_drawdown_pct + "%") +
+    kpi("Paper balance", money(data.balance), "started " + money(data.initial_balance), cls(data.balance - data.initial_balance));
+
+  $("sname").textContent = data.strategy.name;
+  $("ssum").textContent = data.strategy.summary + " · " + data.settings.reward_risk + "R target · " + data.settings.risk_pct + "% risk";
+  $("srules").innerHTML = data.strategy.rules.map(r => `<li>${esc(r)}</li>`).join("");
+
+  // equity curve
+  const closed = [...trades].sort((a, b) => a.exit_time.localeCompare(b.exit_time));
+  let eq = 0; const pts = [0, ...closed.map(t => (eq += t.pnl))];
+  const min = Math.min(...pts), max = Math.max(...pts), span = (max - min) || 1;
+  const xy = pts.map((p, i) => [i / Math.max(1, pts.length - 1) * 600, 130 - (p - min) / span * 120]);
+  const zeroY = 130 - (0 - min) / span * 120;
+  $("eq").innerHTML = pts.length < 2 ? `<text x="10" y="70" fill="currentColor" opacity=".5">No closed trades yet</text>` :
+    `<line x1="0" x2="600" y1="${zeroY}" y2="${zeroY}" stroke="currentColor" opacity=".15" stroke-dasharray="4 4"/>
+     <polyline fill="none" stroke="${eq >= 0 ? "var(--green)" : "var(--red)"}" stroke-width="2" vector-effect="non-scaling-stroke"
+       points="${xy.map(p => p.join(",")).join(" ")}"/>`;
+  $("eqnote").textContent = closed.length ? `· ${money(eq)} over ${closed.length} trades` : "";
+
+  // markets
+  $("markets").innerHTML = Object.entries(data.markets).map(([k, m]) => {
+    const ms = v.by_market[k];
+    const rng = m.range_high != null ? `${m.range_low.toFixed(2)} – ${m.range_high.toFixed(2)} ${m.range_ok ? "✓" : "(skipped)"}` : "not formed yet";
+    return `<div class="card"><h2>${esc(m.label)}</h2>
+      <div class="mrow"><span>Session</span><span>${esc(m.session)}</span></div>
+      <div class="mrow"><span>Win rate</span><span><b>${ms.win_rate == null ? "—" : ms.win_rate + "%"}</b> (${ms.wins}/${ms.trades})</span></div>
+      <div class="mrow"><span>Net P/L</span><span class="${cls(ms.net_pnl)}">${money(ms.net_pnl)}</span></div>
+      <div class="mrow"><span>Profit factor</span><span>${ms.profit_factor ?? "—"}</span></div>
+      <div class="mrow"><span>Last price</span><span>${m.last_price ?? "—"} <span class="sub">${fmtTime(m.last_price_time)}</span></span></div>
+      <div class="mrow"><span>Today's range</span><span>${rng}</span></div>
+      <div class="mrow"><span>Waiting to enter</span><span>${m.pending ? m.pending.side : "—"}</span></div></div>`;
+  }).join("");
+
+  // positions
+  $("positions").innerHTML = data.positions.length ? `<div class="tablewrap"><table>
+    <tr><th>Market</th><th>Strategy</th><th>Side</th><th>Opened</th><th>Entry</th><th>Stop</th><th>Target</th><th>Open P/L</th></tr>
+    ${data.positions.map(p => `<tr><td>${esc(p.label)}</td><td>${esc(p.strategy)}</td><td class="side-${p.side}">${p.side}</td>
+      <td>${fmtTime(p.entry_time)}</td><td>${p.entry.toFixed(2)}</td><td>${p.stop.toFixed(2)}</td><td>${p.target.toFixed(2)}</td>
+      <td class="${cls(p.open_pnl)}">${p.open_pnl == null ? "—" : money(p.open_pnl)}</td></tr>`).join("")}</table></div>`
+    : `<div class="empty">No open positions. The bot waits for the London open (gold) and New York open (NASDAQ) on weekdays.</div>`;
+
+  // trade log
+  $("trades").innerHTML = trades.length ? `<tr><th>Opened</th><th>Market</th><th>Strategy</th><th>Side</th><th>Entry</th><th>Stop</th>
+    <th>Target</th><th>Exit</th><th>Result</th><th>P/L</th><th>R</th><th>Type</th></tr>` +
+    trades.map(t => `<tr><td>${fmtTime(t.entry_time)}</td><td>${esc(t.label)}</td><td>${esc(t.strategy)}</td>
+      <td class="side-${t.side}">${t.side}</td><td>${t.entry}</td><td>${t.stop}</td><td>${t.target}</td><td>${t.exit}</td>
+      <td>${t.pnl > 0 ? "✅ " : "❌ "}${esc(t.reason)}</td><td class="${cls(t.pnl)}">${money(t.pnl)}</td>
+      <td class="${cls(t.r)}">${t.r > 0 ? "+" : ""}${t.r}R</td>
+      <td><span class="badge ${t.mode}">${t.mode === "paper" ? "Paper" : "Backfill"}</span></td></tr>`).join("")
+    : `<tr><td class="empty">No trades yet${view === "paper" ? " since the bot started. Switch to “All trades” to see the 60-day backfill." : "."}</td></tr>`;
+}
+
+async function load() {
+  try {
+    // Local bot serves /api/state; the GitHub Pages copy reads data.json written by the cloud run.
+    const url = location.port === "8765" ? "/api/state" : "data.json?t=" + Date.now();
+    const r = await fetch(url, {cache: "no-store"});
+    data = await r.json();
+    render();
+  } catch (e) {
+    $("dot").classList.add("err");
+    $("status").textContent = "Bot not reachable. Is bot.py running?";
+  }
+}
+load();
+setInterval(load, 15000);
+</script>
+</body>
+</html>
