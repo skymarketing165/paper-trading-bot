@@ -13,22 +13,26 @@ Both buy dips while NASDAQ is in a long-term uptrend (last daily close above the
 | | Daily Pullback | Hourly Pullback |
 |---|---|---|
 | Candles | Daily | Hourly |
-| Buy when | 2-day RSI < 30 | 2-hour RSI < 10 |
-| Sell when | close > 5-day average, or after 10 days | close > 5-hour average, or after 14 hours |
-| Safety stop | 4× daily ATR | 4× hourly ATR |
+| Buy when | 2-day RSI < 30 and the day closed in the bottom half of its range | 2-hour RSI < 10 |
+| Sell when | RSI(2) rises above 70, or after 10 days | close > 5-hour average, or after 14 hours |
+| Safety stop | 6× daily ATR | 6× hourly ATR |
 | Expected trades | ~1.5–2 a month | ~7 a month |
 
-Risk is 0.5% of the starting balance per trade, with one open trade per strategy. Orders fill at the next candle's open
+Risk is 0.75% of the starting balance per trade, with one open trade per strategy. Orders fill at the next candle's open
 with simulated costs.
 
 ## Evidence
 
 | | Data tested | Win rate | Profit factor |
 |---|---|---|---|
-| Daily Pullback | 25 years (research_daily.py) | 65% older half / 75% newer half | 1.19 / 1.91 |
-| Daily Pullback, bot replay | 2023–2026, 97 trades | 74.2% | 2.20 |
-| Hourly Pullback | ~3 years of hourly data | 66–67% in both halves | 1.2–1.3 |
-| Hourly Pullback, bot replay | 2024–2026, 253 trades | 66.0% | 1.09 |
+| Daily Pullback | 25 years (research_winrate.py) | 66.7% older half / 75.6% newer half | 1.40 / 1.80 |
+| Daily Pullback, bot replay | 2023–2026, 78 trades | 76.9% | 2.21 |
+| Hourly Pullback | ~3 years of hourly data | 67.0% / 66.4% | 1.20 / 1.51 |
+| Hourly Pullback, bot replay | 2024–2026, 248 trades | 66.5% | 1.14 |
+
+`research_winrate.py` tested entry filters, exits and stop widths. The daily strategy's win rate improved by buying only
+when the day closed near its low and selling once RSI(2) rises above 70. A 6× ATR stop beat 4× for both strategies
+(the tighter stop often sold right before the bounce). Nothing reliably raised the hourly strategy's win rate.
 
 The hourly strategy has a much thinner edge and far less history. Watch its live paper results closely.
 Earlier strategies that failed: the session breakout (`research.py`) lost money over 2.5 years, and short-selling

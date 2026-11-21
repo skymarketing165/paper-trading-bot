@@ -33,7 +33,7 @@ STATE_FILE = os.path.join(HERE, "state.json")
 DASHBOARD_FILE = os.path.join(HERE, "dashboard.html")
 PORT = 8765
 POLL_SECONDS = 300
-STATE_VERSION = 5
+STATE_VERSION = 6
 TZ = ZoneInfo("America/New_York")
 TICKER = "^NDX"
 
@@ -42,22 +42,23 @@ STRATEGY = {
     "summary": "Buys short dips in the NASDAQ 100 while it's in a long-term uptrend, sells on the bounce",
     "rules": [
         "Only buy while NASDAQ's last daily close is above its 200-day average (no trades in downtrends)",
-        "Daily Pullback: buy at the next day's open when the 2-day RSI on daily candles closes below 30",
-        "Hourly Pullback: buy at the next hour's open when the 2-hour RSI on hourly candles closes below 10",
-        "Sell at the next open once a candle closes above its 5-candle average, or after 10 days / 14 hours",
-        "Safety stop 4x ATR below entry; risk 0.5% of the starting balance per trade; one trade per strategy at a time",
+        "Daily Pullback: buy at the next day's open when the 2-day RSI closes below 30 AND the day closed in the "
+        "bottom half of its range; sell at the next open once RSI(2) rises above 70, or after 10 days",
+        "Hourly Pullback: buy at the next hour's open when the 2-hour RSI closes below 10; sell at the next open "
+        "once an hour closes above its 5-hour average, or after 14 hours",
+        "Safety stop 6x ATR below entry; risk 0.75% of the starting balance per trade; one trade per strategy at a time",
         "Safety switch: pauses a strategy at -8% account drawdown, or if after 20+ live trades its win rate "
         "drops below 50% or profit factor below 1.0",
     ],
-    "evidence": "Daily: 25-year test, 65-75% wins in both halves. Hourly: ~3-year test, 66% wins, PF 1.2-1.3",
+    "evidence": "Daily: 25-year test, 67% / 76% wins (older / newer half). Hourly: ~3-year test, 66-67% wins in both halves",
 }
 
 SETTINGS = {
     "initial_balance": 100000.0,
-    "risk_pct": 0.5,
+    "risk_pct": 0.75,
     "trend_ma": 200,
     "exit_ma": 5,
-    "stop_atr": 4.0,
+    "stop_atr": 6.0,
     "max_drawdown_pct": 8.0,
     "check_after_trades": 20,
     "min_win_rate": 50.0,
@@ -68,9 +69,9 @@ SETTINGS = {
 # key -> strategy settings
 STRATS = {
     "DAILY": {"label": "Daily Pullback", "interval": "1d", "period": "5y", "rsi_buy": 30, "max_bars": 10,
-              "unit": "days", "freq": "~1.5 trades/month"},
+              "ibs_max": 0.5, "exit": "rsi70", "unit": "days", "freq": "~1.5 trades/month"},
     "HOURLY": {"label": "Hourly Pullback", "interval": "1h", "period": "730d", "rsi_buy": 10, "max_bars": 14,
-               "unit": "hours", "freq": "~7 trades/month"},
+               "ibs_max": 1.0, "exit": "ma5", "unit": "hours", "freq": "~7 trades/month"},
 }
 
 LOCK = threading.Lock()
@@ -117,6 +118,8 @@ def rsi(close, n=2):
 
 def add_indicators(df):
     df["rsi"] = rsi(df["Close"])
+    rng = (df["High"] - df["Low"]).replace(0, float("nan"))
+    df["ibs"] = ((df["Close"] - df["Low"]) / rng).fillna(0.5)   # 0 = closed at the low, 1 = at the high
     df["exit_ma"] = df["Close"].rolling(SETTINGS["exit_ma"]).mean()
     pc = df["Close"].shift(1)
     tr = pd.concat([df["High"] - df["Low"], (df["High"] - pc).abs(), (df["Low"] - pc).abs()], axis=1).max(axis=1)
@@ -196,7 +199,8 @@ def close_position(state, key, ss, bar_id, px, reason):
     state["trades"].append({
         "id": f"{key}-{pos['entry_date']}", "market": key, "label": f"NASDAQ 100 · {st['label']}",
         "strategy": st["label"], "mode": pos["mode"], "side": "LONG",
-        "signal": f"RSI(2) {pos['rsi_at_signal']:.1f} < {st['rsi_buy']} in uptrend",
+        "signal": f"RSI(2) {pos['rsi_at_signal']:.1f} < {st['rsi_buy']} in uptrend"
+                  + (", closed near low" if st["ibs_max"] < 1 else ""),
         "entry_time": pos["entry_date"], "entry": round(pos["entry"], 2), "stop": round(pos["stop"], 2),
         "qty": round(pos["qty"], 4), "exit_time": bar_id, "exit": round(exit_px, 2), "reason": reason,
         "days": pos["held"], "pnl": round(pnl, 2), "r": round(pnl / risk, 2),
@@ -221,7 +225,9 @@ def process_bar(state, key, ss, bar_id, bar):
         if bar["Low"] <= pos["stop"]:
             close_position(state, key, ss, bar_id, min(pos["stop"], bar["Open"]), "Safety stop")
         elif not ss["pending_exit"]:
-            if bar["Close"] > bar["exit_ma"]:
+            if st["exit"] == "rsi70" and bar["rsi"] > 70:
+                ss["pending_exit"] = "Bounce (RSI(2) > 70)"
+            elif st["exit"] == "ma5" and bar["Close"] > bar["exit_ma"]:
                 ss["pending_exit"] = "Bounce (close > 5-candle avg)"
             elif pos["held"] >= st["max_bars"]:
                 ss["pending_exit"] = f"Time exit ({st['max_bars']} {st['unit']})"
@@ -235,7 +241,7 @@ def process_bar(state, key, ss, bar_id, bar):
         ss["halted"] = pause
     if pause:
         return
-    if bar["up"] and bar["rsi"] < st["rsi_buy"]:
+    if bar["up"] and bar["rsi"] < st["rsi_buy"] and bar["ibs"] <= st["ibs_max"]:
         ss["pending_entry"] = {"bar": bar_id, "atr": float(bar["atr"]), "rsi": float(bar["rsi"])}
 
 
