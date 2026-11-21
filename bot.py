@@ -1,11 +1,10 @@
 """
-Paper Trading Bot - NASDAQ 100 pullback strategies (daily + hourly)
+Paper Trading Bot - NASDAQ 100 Daily Pullback
 
 Simulated trades only. No broker, no real money.
 - Data: Yahoo Finance ^NDX (Nasdaq-100 index), daily and hourly candles
-- Two strategies run side by side, each with its own stats:
-    Daily Pullback  - ~1.5 trades/month, tested on 25 years (research_daily.py)
-    Hourly Pullback - ~7 trades/month, tested on ~3 years of hourly data
+- Daily Pullback: ~1.5-2 trades/month, tested on 25 years (research_winrate.py)
+  (an hourly version exists in STRATS history but was dropped: lower win rate, ~66%)
 - Backfills history on first run (marked "Backfill"); later trades are "Paper"
 - Safety switch pauses a strategy automatically if its live results fall apart
 
@@ -33,24 +32,22 @@ STATE_FILE = os.path.join(HERE, "state.json")
 DASHBOARD_FILE = os.path.join(HERE, "dashboard.html")
 PORT = 8765
 POLL_SECONDS = 300
-STATE_VERSION = 6
+STATE_VERSION = 7
 TZ = ZoneInfo("America/New_York")
 TICKER = "^NDX"
 
 STRATEGY = {
-    "name": "NASDAQ Pullback (daily + hourly)",
+    "name": "NASDAQ Daily Pullback",
     "summary": "Buys short dips in the NASDAQ 100 while it's in a long-term uptrend, sells on the bounce",
     "rules": [
         "Only buy while NASDAQ's last daily close is above its 200-day average (no trades in downtrends)",
         "Daily Pullback: buy at the next day's open when the 2-day RSI closes below 30 AND the day closed in the "
         "bottom half of its range; sell at the next open once RSI(2) rises above 70, or after 10 days",
-        "Hourly Pullback: buy at the next hour's open when the 2-hour RSI closes below 10; sell at the next open "
-        "once an hour closes above its 5-hour average, or after 14 hours",
-        "Safety stop 6x ATR below entry; risk 0.75% of the starting balance per trade; one trade per strategy at a time",
-        "Safety switch: pauses a strategy at -8% account drawdown, or if after 20+ live trades its win rate "
+        "Safety stop 6x ATR below entry; risk 0.75% of the starting balance per trade; one trade at a time",
+        "Safety switch: pauses new trades at -8% account drawdown, or if after 20+ live trades the win rate "
         "drops below 50% or profit factor below 1.0",
     ],
-    "evidence": "Daily: 25-year test, 67% / 76% wins (older / newer half). Hourly: ~3-year test, 66-67% wins in both halves",
+    "evidence": "25-year test: 67% / 76% wins (older / newer half); 77% wins over the last ~4 years",
 }
 
 SETTINGS = {
@@ -70,8 +67,6 @@ SETTINGS = {
 STRATS = {
     "DAILY": {"label": "Daily Pullback", "interval": "1d", "period": "5y", "rsi_buy": 30, "max_bars": 10,
               "ibs_max": 0.5, "exit": "rsi70", "unit": "days", "freq": "~1.5 trades/month"},
-    "HOURLY": {"label": "Hourly Pullback", "interval": "1h", "period": "730d", "rsi_buy": 10, "max_bars": 14,
-               "ibs_max": 1.0, "exit": "ma5", "unit": "hours", "freq": "~7 trades/month"},
 }
 
 LOCK = threading.Lock()
@@ -249,8 +244,8 @@ def run_cycle(state):
     frames, daily = fetch_all()
     now = datetime.now(timezone.utc)
     with LOCK:
-        for key, df in frames.items():
-            ss = state["strats"][key]
+        for key in STRATS:
+            df, ss = frames[key], state["strats"][key]
             start = df.index[SETTINGS["trend_ma"] + 5] if key == "DAILY" else df.index[30]
             last_bar = None
             for bar_id, bar in df.iterrows():

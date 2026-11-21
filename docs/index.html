@@ -100,7 +100,7 @@ svg { width: 100%; height: 140px; display: block; }
   </div>
 
   <div class="warn">
-    Data: Yahoo Finance Nasdaq-100 index (^NDX), daily and hourly candles, times in New York time. Fills include simulated costs.
+    Data: Yahoo Finance Nasdaq-100 index (^NDX) daily candles; the last price comes from hourly candles (New York time). Fills include simulated costs.
     Backfilled trades are a backtest of recent years and are kept separate from the paper account balance.
   </div>
 </div>
@@ -175,7 +175,7 @@ function render() {
       <td>${esc(p.entry_date)}</td><td>${p.entry.toFixed(2)}</td><td>${p.stop.toFixed(2)}</td><td>${p.held} ${esc(p.unit || "")}</td>
       <td>${p.pending_exit ? "Selling at next open: " + esc(p.pending_exit) : "Holding until the bounce or the time limit"}</td>
       <td class="${cls(p.open_pnl)}">${p.open_pnl == null ? "—" : money(p.open_pnl)}</td></tr>`).join("")}</table></div>`
-    : `<div class="empty">No open positions. The bot checks every 15 minutes and buys only after a dip while NASDAQ is in an uptrend.</div>`;
+    : `<div class="empty">No open positions. The bot checks every 15 minutes and buys only after a dip while NASDAQ is in an uptrend (about 1.5–2 trades a month).</div>`;
 
   // trade log
   $("trades").innerHTML = trades.length ? `<tr><th>Bought</th><th>Sold</th><th>Market</th><th>Strategy</th><th>Why it bought</th><th>Entry</th>
