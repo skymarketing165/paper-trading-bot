@@ -1,53 +1,47 @@
-# Paper Trading Bot
+# Paper Trading Bot: NASDAQ 100
 
-Runs **Trend Pullback (RSI-2)** on 6 markets (NASDAQ 100, S&P 500, Dow, Russell 2000, DAX, gold) with a simulated $100,000 account.
+Runs two NASDAQ 100 pullback strategies side by side with a simulated $100,000 account.
 No broker, no real money: every trade is simulated. It runs every 15 minutes on GitHub Actions,
 so no computer needs to be on.
 
 **Dashboard:** https://skymarketing165.github.io/paper-trading-bot/
 
-## The strategy
+## The strategies
 
-Buys short, sharp dips inside a long-term uptrend and sells on the bounce.
+Both buy dips while NASDAQ is in a long-term uptrend (last daily close above the 200-day average) and sell on the bounce.
 
-1. Only trade in an uptrend: daily close above the 200-day average (buys only)
-2. Buy when the 2-day RSI closes below 20; buy at the next day's open
-3. Sell when the close is back above the 5-day average (at the next open), or after 10 days
-4. Safety stop at 4× the daily ATR below the entry
-5. Risk 0.5% of the starting balance per trade; max 4 open trades at once
+| | Daily Pullback | Hourly Pullback |
+|---|---|---|
+| Candles | Daily | Hourly |
+| Buy when | 2-day RSI < 30 | 2-hour RSI < 10 |
+| Sell when | close > 5-day average, or after 10 days | close > 5-hour average, or after 14 hours |
+| Safety stop | 4× daily ATR | 4× hourly ATR |
+| Expected trades | ~1.5–2 a month | ~7 a month |
 
-### Why this strategy
+Risk is 0.5% of the starting balance per trade, with one open trade per strategy. Orders fill at the next candle's open
+with simulated costs.
 
-`research.py` tested the earlier session-breakout strategy on ~2.5 years of hourly data: it **lost money**
-(the 70% win rate from 60 days of data didn't hold up). `research_daily.py` tested this pullback strategy on
-25 years of daily data, choosing settings on the older half and checking them on the newer half:
+## Evidence
 
-| Market | Trades | Win rate (older / newer half) | Profit factor (all) |
+| | Data tested | Win rate | Profit factor |
 |---|---|---|---|
-| NASDAQ 100 | 203 | 67.8% / 68.1% | 1.42 |
-| Gold | 173 | 63.3% / 61.3% | 1.43 |
+| Daily Pullback | 25 years (research_daily.py) | 65% older half / 75% newer half | 1.19 / 1.91 |
+| Daily Pullback, bot replay | 2023–2026, 97 trades | 74.2% | 2.20 |
+| Hourly Pullback | ~3 years of hourly data | 66–67% in both halves | 1.2–1.3 |
+| Hourly Pullback, bot replay | 2024–2026, 253 trades | 66.0% | 1.09 |
 
-`research_multi.py` then tested the same rules on 11 markets. With the dip threshold at RSI below 20, six markets
-passed (60%+ wins and profit factor above 1.1 in both halves): NASDAQ 100, S&P 500, Dow, Russell 2000, DAX and gold.
-Silver, oil, EUR/USD, the Nikkei and FTSE (at RSI 20) and nearly all short-selling versions failed, so they're left out.
-
-Backfill over the last 4 years with all 6 markets: **365 trades (~7–8 a month), 71.2% win rate, profit factor 1.76,
-+12.4%, max drawdown 1.6%.** It only buys in uptrends, so there can be long stretches with no trades.
+The hourly strategy has a much thinner edge and far less history. Watch its live paper results closely.
+Earlier strategies that failed: the session breakout (`research.py`) lost money over 2.5 years, and short-selling
+versions of the pullback lost money over the last 4 years.
 
 ## Safety switch (fully automatic)
 
-New trades are paused automatically, with the reason shown on the dashboard, if:
+Each strategy stops taking new trades on its own, with the reason shown on the dashboard, if:
 - the paper account is down 8% from the start, or
-- after 20+ live paper trades, the win rate drops below 50% or the profit factor below 1.0.
+- after 20+ live trades, that strategy's win rate drops below 50% or its profit factor below 1.0.
 
 ## Running it
 
 - **Cloud:** `.github/workflows/paper-bot.yml` runs `bot.py --once` every 15 minutes and publishes `docs/`.
   Pause it from the repository's **Actions** tab → **Paper trading bot** → **⋯** → **Disable workflow**.
 - **Locally:** `.venv/bin/python bot.py`, then open http://localhost:8765. Add `--reset` to start the account over.
-
-## Good to know
-
-- Data: Yahoo Finance daily candles (^NDX, ^GSPC, ^DJI, ^RUT, ^GDAXI index levels and GC=F gold futures).
-- Fills at the next day's open with simulated costs (0.02% NASDAQ, 0.03% gold per side pair).
-- The "Backfill" trades are a backtest of the last ~4 years; they don't count toward the paper balance.

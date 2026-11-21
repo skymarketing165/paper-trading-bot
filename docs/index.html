@@ -61,11 +61,11 @@ svg { width: 100%; height: 140px; display: block; }
   <header>
     <div>
       <h1>Paper Trading Bot</h1>
-      <div class="sub">Simulated account · no real money · gold &amp; NASDAQ</div>
+      <div class="sub">Simulated account · no real money · NASDAQ 100</div>
     </div>
     <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">
       <div class="toggle" id="toggle">
-        <button data-v="all" class="on">All trades (incl. 4-year backfill)</button>
+        <button data-v="all" class="on">All trades (incl. backfill)</button>
         <button data-v="paper">Paper trades since start</button>
       </div>
       <span class="pill"><span class="dot" id="dot"></span><span id="status">Loading…</span></span>
@@ -100,8 +100,8 @@ svg { width: 100%; height: 140px; display: block; }
   </div>
 
   <div class="warn">
-    Data: Yahoo Finance daily candles for the Nasdaq-100 index (^NDX) and gold futures (GC=F). Fills include simulated costs.
-    Backfilled trades are a backtest of the last ~4 years and are kept separate from the paper account balance.
+    Data: Yahoo Finance Nasdaq-100 index (^NDX), daily and hourly candles, times in New York time. Fills include simulated costs.
+    Backfilled trades are a backtest of recent years and are kept separate from the paper account balance.
   </div>
 </div>
 
@@ -135,7 +135,7 @@ function render() {
 
   $("kpis").innerHTML =
     kpi("Win rate", o.win_rate == null ? "—" : o.win_rate + "%", `${o.wins} wins · ${o.losses} losses`, "", true) +
-    kpi("Trades", o.trades, view === "paper" ? "since " + fmtTime(data.started_at) : "~4-year backfill + paper") +
+    kpi("Trades", o.trades, view === "paper" ? "since " + fmtTime(data.started_at) : "backfill + paper") +
     kpi("Profit factor", o.profit_factor ?? "—", "gross win ÷ gross loss") +
     kpi("Net P/L", money(o.net_pnl), o.avg_r == null ? "" : "avg " + o.avg_r + "R per trade", cls(o.net_pnl)) +
     kpi("Max drawdown", o.max_dd_pct + "%", "limit " + data.settings.max_drawdown_pct + "%") +
@@ -170,16 +170,16 @@ function render() {
 
   // positions
   $("positions").innerHTML = data.positions.length ? `<div class="tablewrap"><table>
-    <tr><th>Market</th><th>Strategy</th><th>Side</th><th>Opened</th><th>Entry</th><th>Safety stop</th><th>Days held</th><th>Exit</th><th>Open P/L</th></tr>
+    <tr><th>Market</th><th>Strategy</th><th>Side</th><th>Opened</th><th>Entry</th><th>Safety stop</th><th>Held</th><th>Exit</th><th>Open P/L</th></tr>
     ${data.positions.map(p => `<tr><td>${esc(p.label)}</td><td>${esc(p.strategy)}</td><td class="side-${p.side}">${p.side}</td>
-      <td>${esc(p.entry_date)}</td><td>${p.entry.toFixed(2)}</td><td>${p.stop.toFixed(2)}</td><td>${p.held}</td>
-      <td>${p.pending_exit ? "Selling at next open: " + esc(p.pending_exit) : "Holding until bounce or 10 days"}</td>
+      <td>${esc(p.entry_date)}</td><td>${p.entry.toFixed(2)}</td><td>${p.stop.toFixed(2)}</td><td>${p.held} ${esc(p.unit || "")}</td>
+      <td>${p.pending_exit ? "Selling at next open: " + esc(p.pending_exit) : "Holding until the bounce or the time limit"}</td>
       <td class="${cls(p.open_pnl)}">${p.open_pnl == null ? "—" : money(p.open_pnl)}</td></tr>`).join("")}</table></div>`
-    : `<div class="empty">No open positions. The bot checks every 15 minutes and buys only after a sharp dip in an uptrend, so it can go weeks without trading.</div>`;
+    : `<div class="empty">No open positions. The bot checks every 15 minutes and buys only after a dip while NASDAQ is in an uptrend.</div>`;
 
   // trade log
   $("trades").innerHTML = trades.length ? `<tr><th>Bought</th><th>Sold</th><th>Market</th><th>Strategy</th><th>Why it bought</th><th>Entry</th>
-    <th>Exit</th><th>Days</th><th>Result</th><th>Return</th><th>P/L</th><th>Type</th></tr>` +
+    <th>Exit</th><th>Candles held</th><th>Result</th><th>Return</th><th>P/L</th><th>Type</th></tr>` +
     trades.map(t => `<tr><td>${esc(t.entry_time)}</td><td>${esc(t.exit_time)}</td><td>${esc(t.label)}</td><td>${esc(t.strategy)}</td>
       <td>${esc(t.signal)}</td><td>${t.entry}</td><td>${t.exit}</td><td>${t.days}</td>
       <td>${t.pnl > 0 ? "✅ " : "❌ "}${esc(t.reason)}</td><td class="${cls(t.ret_pct)}">${t.ret_pct > 0 ? "+" : ""}${t.ret_pct}%</td>
