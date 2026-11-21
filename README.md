@@ -14,7 +14,21 @@ Buys dips while NASDAQ is in a long-term uptrend and sells on the bounce.
 2. Buy at the next day's open when the 2-day RSI closes below 30 **and** the day closed in the bottom half of its range
 3. Sell at the next open once RSI(2) rises above 70, or after 10 days
 4. Safety stop at 6× the daily ATR below the entry
-5. Risk 0.75% of the starting balance per trade, one trade at a time
+5. Put 25% of the starting balance into each trade, one trade at a time
+
+### Position size and profit
+
+The win rate doesn't depend on size; profit and drawdown do. 25-year test (2000–2026) and recent years:
+
+| Size per trade | Per year (25 yrs) | Per year (2023–26) | Worst drawdown (25 yrs) |
+|---|---|---|---|
+| 8% (previous) | 0.5% | 1.2% | 2.3% |
+| **25% (current)** | **1.7%** | **3.6%** | **7.0%** |
+| 50% | 3.3% | 7.3% | 13.6% |
+| 100% | 6.4% | 14.8% | 25.8% |
+
+25% is the largest size whose worst historical drawdown stays inside the 8% safety switch.
+To change it, edit `position_pct` in `bot.py`.
 
 Expect about 1.5–2 trades a month, and none while NASDAQ is below its 200-day average.
 

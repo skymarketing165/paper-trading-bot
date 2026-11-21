@@ -32,7 +32,7 @@ STATE_FILE = os.path.join(HERE, "state.json")
 DASHBOARD_FILE = os.path.join(HERE, "dashboard.html")
 PORT = 8765
 POLL_SECONDS = 300
-STATE_VERSION = 7
+STATE_VERSION = 8
 TZ = ZoneInfo("America/New_York")
 TICKER = "^NDX"
 
@@ -43,7 +43,8 @@ STRATEGY = {
         "Only buy while NASDAQ's last daily close is above its 200-day average (no trades in downtrends)",
         "Daily Pullback: buy at the next day's open when the 2-day RSI closes below 30 AND the day closed in the "
         "bottom half of its range; sell at the next open once RSI(2) rises above 70, or after 10 days",
-        "Safety stop 6x ATR below entry; risk 0.75% of the starting balance per trade; one trade at a time",
+        "Position size: 25% of the starting balance per trade (sized so the worst 25-year drawdown, 7%, stays "
+        "inside the 8% safety limit); safety stop 6x ATR below entry; one trade at a time",
         "Safety switch: pauses new trades at -8% account drawdown, or if after 20+ live trades the win rate "
         "drops below 50% or profit factor below 1.0",
     ],
@@ -52,7 +53,7 @@ STRATEGY = {
 
 SETTINGS = {
     "initial_balance": 100000.0,
-    "risk_pct": 0.75,
+    "position_pct": 25.0,
     "trend_ma": 200,
     "exit_ma": 5,
     "stop_atr": 6.0,
@@ -180,9 +181,9 @@ def open_position(state, key, ss, bar_id, open_px):
     ss["pending_entry"] = None
     entry = open_px * (1 + SETTINGS["cost_pct"] / 200)
     stop_dist = SETTINGS["stop_atr"] * p["atr"]
-    risk = state["initial_balance"] * SETTINGS["risk_pct"] / 100
+    qty = state["initial_balance"] * SETTINGS["position_pct"] / 100 / entry
     ss["position"] = {"side": "LONG", "entry": entry, "entry_date": bar_id, "stop": entry - stop_dist,
-                      "qty": risk / stop_dist, "held": 0, "rsi_at_signal": p["rsi"],
+                      "qty": qty, "risk_amt": qty * stop_dist, "held": 0, "rsi_at_signal": p["rsi"],
                       "mode": "paper" if state["backfilled"] else "backtest"}
 
 
@@ -190,7 +191,7 @@ def close_position(state, key, ss, bar_id, px, reason):
     pos, st = ss["position"], STRATS[key]
     exit_px = px * (1 - SETTINGS["cost_pct"] / 200)
     pnl = (exit_px - pos["entry"]) * pos["qty"]
-    risk = state["initial_balance"] * SETTINGS["risk_pct"] / 100
+    risk = pos["risk_amt"]
     state["trades"].append({
         "id": f"{key}-{pos['entry_date']}", "market": key, "label": f"NASDAQ 100 · {st['label']}",
         "strategy": st["label"], "mode": pos["mode"], "side": "LONG",

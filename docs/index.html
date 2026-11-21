@@ -142,7 +142,7 @@ function render() {
     kpi("Paper balance", money(data.balance), "started " + money(data.initial_balance), cls(data.balance - data.initial_balance));
 
   $("sname").textContent = data.strategy.name;
-  $("ssum").textContent = data.strategy.summary + " · " + data.settings.risk_pct + "% risk per trade · " + (data.strategy.evidence || "");
+  $("ssum").textContent = data.strategy.summary + " · " + data.settings.position_pct + "% of account per trade · " + (data.strategy.evidence || "");
   $("srules").innerHTML = data.strategy.rules.map(r => `<li>${esc(r)}</li>`).join("");
 
   // equity curve
