@@ -1,24 +1,25 @@
 """
-Paper Trading Bot - Session Breakout v2 (gold + NASDAQ)
+Paper Trading Bot - Trend Pullback (RSI-2) on gold + NASDAQ
 
 Simulated trades only. No broker, no real money.
-- Pulls 15-minute and 1-hour candles from Yahoo Finance (GC=F gold futures, NQ=F Nasdaq-100 futures)
-- Runs the same rules as SessionBreakoutBot.mq5 / .pine (improved settings)
-- Keeps a paper account in state.json
-- Serves a live dashboard at http://localhost:8765
+- Daily candles from Yahoo Finance: ^NDX (Nasdaq-100 index) and GC=F (gold futures)
+- Strategy chosen from 25 years of walk-forward testing (see research_daily.py)
+- Keeps a paper account in state.json; backfills ~4 years of trades on first run (marked "Backfill")
+- Safety switch pauses new trades automatically if live results fall apart
+- Serves a dashboard at http://localhost:8765 (local) or writes docs/data.json (GitHub Pages)
 
 Usage:
-    .venv/bin/python bot.py            # start (backfills the last ~60 days on first run)
-    .venv/bin/python bot.py --reset    # wipe the paper account and start over
+    .venv/bin/python bot.py                    # run locally with dashboard
+    .venv/bin/python bot.py --reset            # wipe the paper account and start over
+    python bot.py --once --export docs/data.json   # one cycle (used by GitHub Actions)
 """
 import argparse
 import json
-import math
 import os
 import threading
 import time
 import warnings
-from datetime import datetime, time as dtime, timedelta, timezone
+from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from zoneinfo import ZoneInfo
 
@@ -30,55 +31,43 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 STATE_FILE = os.path.join(HERE, "state.json")
 DASHBOARD_FILE = os.path.join(HERE, "dashboard.html")
 PORT = 8765
-POLL_SECONDS = 60
+POLL_SECONDS = 300
+STATE_VERSION = 3
 
 STRATEGY = {
-    "name": "Session Breakout v3",
-    "summary": "Opening-range breakout with 1-hour 200 EMA trend filter, quick profit target",
+    "name": "Trend Pullback (RSI-2)",
+    "summary": "Buys short dips inside a long-term uptrend, sells on the bounce",
     "rules": [
-        "Mark the high/low of the session's opening range",
-        "Trend filter: last 1h close above 200 EMA = buys only, below = sells only",
-        "Enter when a 15-minute candle closes outside the range, in the trend direction",
-        "Stop loss on the other side of the range, take profit at 0.5x the risk (quick target = high win rate)",
-        "Max 1 trade per market per day; close everything at the end of the session",
-        "Risk 0.5% of starting balance per trade; stop for the day at -4%, stop for good at -8%",
+        "Only trade in an uptrend: daily close above its 200-day average (buys only)",
+        "Buy signal: 2-day RSI closes below 10 (a sharp short-term dip); buy at the next day's open",
+        "Sell when the close is back above the 5-day average (sell at the next open)",
+        "Time exit: sell after 10 days if it hasn't bounced",
+        "Safety stop: 4x the daily ATR below the entry price",
+        "Risk 0.5% of the starting balance per trade (position size set by the safety stop)",
+        "Safety switch: pauses new trades at -8% drawdown, or if after 20+ live trades the win rate "
+        "drops below 50% or the profit factor below 1.0",
     ],
+    "evidence": "25-year walk-forward test: NASDAQ 68% wins (PF 1.42, 203 trades), gold 62% wins (PF 1.43, 173 trades)",
 }
 
 SETTINGS = {
     "initial_balance": 100000.0,
     "risk_pct": 0.5,
-    "reward_risk": 0.5,
-    "daily_loss_pct": 4.0,
+    "rsi_len": 2,
+    "rsi_buy": 10,
+    "trend_ma": 200,
+    "exit_ma": 5,
+    "max_days": 10,
+    "stop_atr": 4.0,
     "max_drawdown_pct": 8.0,
-    "min_range_atr": 0.5,
-    "max_range_atr": 3.0,
-    "ema_len": 200,
-    "atr_len": 14,
-    "max_trades_per_day": 1,
+    "check_after_trades": 20,
+    "min_win_rate": 50.0,
+    "min_profit_factor": 1.0,
 }
 
 MARKETS = {
-    "GOLD": {
-        "label": "Gold (XAUUSD)",
-        "ticker": "GC=F",
-        "tz": "Europe/London",
-        "session": "London open",
-        "range": (dtime(8, 0), dtime(8, 30)),
-        "entry_end": dtime(11, 0),
-        "day_end": dtime(20, 0),
-        "spread": 0.30,
-    },
-    "NASDAQ": {
-        "label": "NASDAQ 100 (NAS100)",
-        "ticker": "NQ=F",
-        "tz": "America/New_York",
-        "session": "New York open",
-        "range": (dtime(9, 30), dtime(9, 45)),
-        "entry_end": dtime(12, 0),
-        "day_end": dtime(15, 45),
-        "spread": 2.0,
-    },
+    "NASDAQ": {"label": "NASDAQ 100", "ticker": "^NDX", "tz": "America/New_York", "cost_pct": 0.02},
+    "GOLD": {"label": "Gold", "ticker": "GC=F", "tz": "America/New_York", "cost_pct": 0.03},
 }
 
 LOCK = threading.Lock()
@@ -88,20 +77,23 @@ STATUS = {"last_check": None, "last_error": None, "next_check": None}
 # ---------------------------------------------------------------- state
 def new_state():
     return {
+        "version": STATE_VERSION,
         "started_at": datetime.now(timezone.utc).isoformat(),
         "initial_balance": SETTINGS["initial_balance"],
-        "markets": {k: {"last_bar": None, "day": None, "r_hi": None, "r_lo": None,
-                        "range_done": False, "range_ok": False, "trades_today": 0,
-                        "pending": None, "position": None} for k in MARKETS},
+        "markets": {k: {"last_done": None, "position": None, "pending_entry": None,
+                        "pending_exit": None, "last_exit_date": None, "info": {}} for k in MARKETS},
         "trades": [],
-        "halted": False,
+        "halted": None,
     }
 
 
 def load_state():
     if os.path.exists(STATE_FILE):
         with open(STATE_FILE) as f:
-            return json.load(f)
+            s = json.load(f)
+        if s.get("version") == STATE_VERSION:
+            return s
+        print("Old strategy state found: starting a new paper account for the new strategy.", flush=True)
     return new_state()
 
 
@@ -113,167 +105,143 @@ def save_state(state):
 
 
 # ---------------------------------------------------------------- data
+def rsi(close, n):
+    d = close.diff()
+    up = d.clip(lower=0).ewm(alpha=1 / n, adjust=False).mean()
+    dn = (-d.clip(upper=0)).ewm(alpha=1 / n, adjust=False).mean()
+    return 100 - 100 / (1 + up / dn)
+
+
 def fetch(ticker):
-    t = yf.Ticker(ticker)
-    m15 = t.history(period="60d", interval="15m").dropna(subset=["Open", "High", "Low", "Close"])
-    h1 = t.history(period="1y", interval="1h").dropna(subset=["Close"])
-    if m15.empty or h1.empty:
-        raise RuntimeError(f"No data for {ticker}")
-    m15.index = m15.index.tz_convert("UTC")
-    h1.index = h1.index.tz_convert("UTC")
-
-    prev_close = m15["Close"].shift(1)
-    tr = pd.concat([m15["High"] - m15["Low"],
-                    (m15["High"] - prev_close).abs(),
-                    (m15["Low"] - prev_close).abs()], axis=1).max(axis=1)
-    m15["atr_prev"] = tr.ewm(alpha=1 / SETTINGS["atr_len"], adjust=False).mean().shift(1)
-
-    h1 = h1.copy()
-    h1["ema"] = h1["Close"].ewm(span=SETTINGS["ema_len"], adjust=False).mean()
-    h1["close_time"] = h1.index + timedelta(hours=1)
-    return m15, h1
-
-
-def trend_at(h1, when):
-    """+1 / -1 / 0 using the last fully closed 1h candle at time `when`."""
-    idx = h1["close_time"].searchsorted(when, side="right") - 1
-    if idx < SETTINGS["ema_len"]:
-        return 0
-    row = h1.iloc[idx]
-    if row["Close"] > row["ema"]:
-        return 1
-    if row["Close"] < row["ema"]:
-        return -1
-    return 0
+    df = yf.Ticker(ticker).history(period="5y", interval="1d").dropna(subset=["Open", "High", "Low", "Close"])
+    if len(df) < 300:
+        raise RuntimeError(f"Not enough data for {ticker}")
+    df["trend_ma"] = df["Close"].rolling(SETTINGS["trend_ma"]).mean()
+    df["exit_ma"] = df["Close"].rolling(SETTINGS["exit_ma"]).mean()
+    df["rsi"] = rsi(df["Close"], SETTINGS["rsi_len"])
+    pc = df["Close"].shift(1)
+    tr = pd.concat([df["High"] - df["Low"], (df["High"] - pc).abs(), (df["Low"] - pc).abs()], axis=1).max(axis=1)
+    df["atr"] = tr.rolling(14).mean()
+    df.index = [d.date().isoformat() for d in df.index]
+    return df
 
 
 # ---------------------------------------------------------------- engine
+def mode_for(state, date_iso):
+    return "paper" if date_iso >= state["started_at"][:10] else "backtest"
+
+
 def balance(state, mode="paper"):
-    """Paper account balance. Backfilled (backtest) trades are kept separate."""
     return state["initial_balance"] + sum(t["pnl"] for t in state["trades"] if t["mode"] == mode)
 
 
-def day_pnl(state, day_iso, mode):
-    return sum(t["pnl"] for t in state["trades"] if t["exit_time"][:10] == day_iso and t["mode"] == mode)
+def safety_check(state, mode):
+    """Returns a reason string if new trades should be paused, else None."""
+    init = state["initial_balance"]
+    if balance(state, mode) <= init * (1 - SETTINGS["max_drawdown_pct"] / 100):
+        return f"Account down {SETTINGS['max_drawdown_pct']}% from start"
+    if mode != "paper":
+        return None
+    live = [t for t in state["trades"] if t["mode"] == "paper"]
+    if len(live) >= SETTINGS["check_after_trades"]:
+        s = stats(live, init)
+        if s["win_rate"] < SETTINGS["min_win_rate"]:
+            return f"Live win rate {s['win_rate']}% is below {SETTINGS['min_win_rate']}%"
+        if s["profit_factor"] is not None and s["profit_factor"] < SETTINGS["min_profit_factor"]:
+            return f"Live profit factor {s['profit_factor']} is below {SETTINGS['min_profit_factor']}"
+    return None
 
 
-def close_position(state, key, mk, ms, when, price, reason):
-    pos = ms["position"]
-    d = 1 if pos["side"] == "LONG" else -1
-    exit_px = price - d * mk["spread"] / 2
-    pnl = (exit_px - pos["entry"]) * d * pos["qty"]
+def open_position(state, key, mk, ms, date_iso, open_px):
+    p = ms.pop("pending_entry")
+    ms["pending_entry"] = None
+    entry = open_px * (1 + mk["cost_pct"] / 200)
+    stop_dist = SETTINGS["stop_atr"] * p["atr"]
     risk = state["initial_balance"] * SETTINGS["risk_pct"] / 100
-    mode = "paper" if pos["entry_time"] >= state["started_at"] else "backtest"
+    ms["position"] = {"side": "LONG", "entry": entry, "entry_date": date_iso, "signal_date": p["date"],
+                      "stop": entry - stop_dist, "qty": risk / stop_dist, "held": 0,
+                      "rsi_at_signal": p["rsi"]}
+
+
+def close_position(state, key, mk, ms, date_iso, px, reason):
+    pos = ms["position"]
+    exit_px = px * (1 - mk["cost_pct"] / 200)
+    pnl = (exit_px - pos["entry"]) * pos["qty"]
+    risk = state["initial_balance"] * SETTINGS["risk_pct"] / 100
     state["trades"].append({
-        "id": f"{key}-{pos['entry_time']}",
-        "market": key,
-        "label": mk["label"],
-        "strategy": STRATEGY["name"],
-        "session": mk["session"],
-        "mode": mode,
-        "side": pos["side"],
-        "entry_time": pos["entry_time"],
-        "entry": round(pos["entry"], 2),
-        "stop": round(pos["stop"], 2),
-        "target": round(pos["target"], 2),
-        "qty": round(pos["qty"], 2),
-        "exit_time": when.isoformat(),
-        "exit": round(exit_px, 2),
-        "reason": reason,
-        "pnl": round(pnl, 2),
-        "r": round(pnl / risk, 2),
+        "id": f"{key}-{pos['entry_date']}", "market": key, "label": mk["label"],
+        "strategy": STRATEGY["name"], "mode": mode_for(state, pos["entry_date"]), "side": pos["side"],
+        "signal": f"RSI(2) {pos['rsi_at_signal']:.1f} < {SETTINGS['rsi_buy']} in uptrend",
+        "entry_time": pos["entry_date"], "entry": round(pos["entry"], 2), "stop": round(pos["stop"], 2),
+        "qty": round(pos["qty"], 3), "exit_time": date_iso, "exit": round(exit_px, 2), "reason": reason,
+        "days": pos["held"], "pnl": round(pnl, 2), "r": round(pnl / risk, 2),
+        "ret_pct": round((exit_px / pos["entry"] - 1) * 100, 2),
     })
     ms["position"] = None
+    ms["pending_exit"] = None
+    ms["last_exit_date"] = date_iso
 
 
-def process_bar(state, key, mk, ms, ts, bar, h1):
-    tz = ZoneInfo(mk["tz"])
-    local = ts.astimezone(tz)
-    t = local.time()
-    r_start, r_end = mk["range"]
-    bar_close_time = ts + timedelta(minutes=15)
+def process_day(state, key, mk, ms, d, bar):
+    """One COMPLETED daily candle."""
+    if ms["pending_entry"] and not ms["position"]:
+        open_position(state, key, mk, ms, d, bar["Open"])
+    if ms["pending_exit"] and ms["position"] and ms["position"]["entry_date"] < d:
+        close_position(state, key, mk, ms, d, bar["Open"], ms["pending_exit"])
 
-    # new trading day
-    day = local.date().isoformat()
-    if ms["day"] != day:
-        ms.update(day=day, r_hi=None, r_lo=None, range_done=False, range_ok=False, trades_today=0)
-
-    # 1) fill a pending entry at this bar's open
-    if ms["pending"] and ms["position"] is None:
-        p = ms["pending"]
-        ms["pending"] = None
-        d = 1 if p["side"] == "LONG" else -1
-        entry = bar["Open"] + d * mk["spread"] / 2
-        dist = (entry - p["stop"]) * d
-        if dist > 0:
-            risk = state["initial_balance"] * SETTINGS["risk_pct"] / 100
-            ms["position"] = {
-                "side": p["side"], "entry": entry, "stop": p["stop"],
-                "target": entry + d * dist * SETTINGS["reward_risk"],
-                "qty": risk / dist, "entry_time": ts.isoformat(), "day": day,
-            }
-            ms["trades_today"] += 1
-
-    # 2) manage open position
     pos = ms["position"]
     if pos:
-        if pos["day"] != day or t >= mk["day_end"]:
-            close_position(state, key, mk, ms, ts, bar["Open"], "End of session")
-        elif pos["side"] == "LONG":
-            if bar["Low"] <= pos["stop"]:
-                close_position(state, key, mk, ms, bar_close_time, min(pos["stop"], bar["Open"]), "Stop loss")
-            elif bar["High"] >= pos["target"]:
-                close_position(state, key, mk, ms, bar_close_time, max(pos["target"], bar["Open"]), "Take profit")
-        else:
-            if bar["High"] >= pos["stop"]:
-                close_position(state, key, mk, ms, bar_close_time, max(pos["stop"], bar["Open"]), "Stop loss")
-            elif bar["Low"] <= pos["target"]:
-                close_position(state, key, mk, ms, bar_close_time, min(pos["target"], bar["Open"]), "Take profit")
+        pos["held"] += 1
+        if bar["Low"] <= pos["stop"]:
+            close_position(state, key, mk, ms, d, min(pos["stop"], bar["Open"]), "Safety stop")
+        elif not ms["pending_exit"]:
+            if bar["Close"] > bar["exit_ma"]:
+                ms["pending_exit"] = "Bounce (close > 5-day avg)"
+            elif pos["held"] >= SETTINGS["max_days"]:
+                ms["pending_exit"] = f"Time exit ({SETTINGS['max_days']} days)"
+        return
 
-    # 3) build the opening range
-    if r_start <= t < r_end:
-        ms["r_hi"] = bar["High"] if ms["r_hi"] is None else max(ms["r_hi"], bar["High"])
-        ms["r_lo"] = bar["Low"] if ms["r_lo"] is None else min(ms["r_lo"], bar["Low"])
-    elif t >= r_end and not ms["range_done"] and ms["r_hi"] is not None:
-        ms["range_done"] = True
-        atr = bar["atr_prev"]
-        width = ms["r_hi"] - ms["r_lo"]
-        ms["range_ok"] = bool(atr and not math.isnan(atr) and
-                              SETTINGS["min_range_atr"] * atr <= width <= SETTINGS["max_range_atr"] * atr)
-
-    # 4) look for a breakout signal (filled on the next bar's open)
-    mode = "paper" if ts.isoformat() >= state["started_at"] else "backtest"
-    halted = balance(state, mode) <= state["initial_balance"] * (1 - SETTINGS["max_drawdown_pct"] / 100)
-    if mode == "paper" and halted:
-        state["halted"] = True
-    daily_limit_hit = day_pnl(state, ts.date().isoformat(), mode) <= -state["initial_balance"] * SETTINGS["daily_loss_pct"] / 100
-    can_trade = (ms["range_ok"] and r_end <= t < mk["entry_end"] and ms["position"] is None
-                 and ms["pending"] is None and ms["trades_today"] < SETTINGS["max_trades_per_day"]
-                 and not halted and not daily_limit_hit)
-    if can_trade:
-        trend = trend_at(h1, bar_close_time)
-        if trend > 0 and bar["Close"] > ms["r_hi"]:
-            ms["pending"] = {"side": "LONG", "stop": ms["r_lo"]}
-        elif trend < 0 and bar["Close"] < ms["r_lo"]:
-            ms["pending"] = {"side": "SHORT", "stop": ms["r_hi"]}
+    if ms["pending_entry"] or ms["last_exit_date"] == d:
+        return
+    mode = mode_for(state, d)
+    pause = safety_check(state, mode)
+    if mode == "paper":
+        state["halted"] = pause
+    if pause:
+        return
+    if bar["Close"] > bar["trend_ma"] and bar["rsi"] < SETTINGS["rsi_buy"]:
+        ms["pending_entry"] = {"date": d, "atr": float(bar["atr"]), "rsi": float(bar["rsi"])}
 
 
 def run_cycle(state):
-    now = datetime.now(timezone.utc)
     for key, mk in MARKETS.items():
-        m15, h1 = fetch(mk["ticker"])
+        df = fetch(mk["ticker"])
         ms = state["markets"][key]
-        last = pd.Timestamp(ms["last_bar"]) if ms["last_bar"] else None
-        for ts, bar in m15.iterrows():
-            if ts + timedelta(minutes=15) > now:   # candle still forming
-                break
-            if last is not None and ts <= last:
-                continue
-            with LOCK:
-                process_bar(state, key, mk, ms, ts.to_pydatetime(), bar, h1)
-                ms["last_bar"] = ts.isoformat()
-        ms["last_price"] = round(float(m15["Close"].iloc[-1]), 2)
-        ms["last_price_time"] = m15.index[-1].isoformat()
+        today = datetime.now(ZoneInfo(mk["tz"])).date().isoformat()
+        start = df.index[SETTINGS["trend_ma"] + 5]
+        with LOCK:
+            for d, bar in df.iterrows():
+                if d < start or (ms["last_done"] and d <= ms["last_done"]):
+                    continue
+                if d >= today:          # today's candle is still forming
+                    break
+                process_day(state, key, mk, ms, d, bar)
+                ms["last_done"] = d
+            # Today's open is already known: fill pending orders at it right away
+            if df.index[-1] >= today:
+                d, bar = df.index[-1], df.iloc[-1]
+                if ms["pending_entry"] and not ms["position"]:
+                    open_position(state, key, mk, ms, d, bar["Open"])
+                elif ms["pending_exit"] and ms["position"] and ms["position"]["entry_date"] < d:
+                    close_position(state, key, mk, ms, d, bar["Open"], ms["pending_exit"])
+            last = df.iloc[-1]
+            done = df[df.index < today].iloc[-1]
+            ms["info"] = {
+                "price": round(float(last["Close"]), 2), "price_date": df.index[-1],
+                "rsi": round(float(done["rsi"]), 1), "trend_ma": round(float(done["trend_ma"]), 2),
+                "uptrend": bool(done["Close"] > done["trend_ma"]), "exit_ma": round(float(done["exit_ma"]), 2),
+                "as_of": df[df.index < today].index[-1],
+            }
     with LOCK:
         save_state(state)
 
@@ -290,9 +258,7 @@ def stats(trades, initial):
         peak = max(peak, eq)
         max_dd = max(max_dd, (peak - eq) / peak * 100)
     return {
-        "trades": n,
-        "wins": len(wins),
-        "losses": n - len(wins),
+        "trades": n, "wins": len(wins), "losses": n - len(wins),
         "win_rate": round(len(wins) / n * 100, 1) if n else None,
         "profit_factor": round(gross_win / gross_loss, 2) if gross_loss > 0 else None,
         "net_pnl": round(gross_win - gross_loss, 2),
@@ -304,28 +270,40 @@ def stats(trades, initial):
 def snapshot():
     with LOCK:
         state = json.loads(json.dumps(STATE))
-    trades = state["trades"]
-    init = state["initial_balance"]
+    trades, init = state["trades"], state["initial_balance"]
     out = {"strategy": STRATEGY, "settings": SETTINGS, "started_at": state["started_at"],
            "halted": state["halted"], "status": STATUS, "balance": round(balance(state), 2),
            "initial_balance": init, "views": {}, "positions": [], "markets": {}}
     for view, sel in (("paper", lambda t: t["mode"] == "paper"), ("all", lambda t: True)):
         ts = [t for t in trades if sel(t)]
-        out["views"][view] = {
-            "overall": stats(ts, init),
-            "by_market": {k: stats([t for t in ts if t["market"] == k], init) for k in MARKETS},
-        }
+        out["views"][view] = {"overall": stats(ts, init),
+                              "by_market": {k: stats([t for t in ts if t["market"] == k], init) for k in MARKETS}}
     for key, ms in state["markets"].items():
-        mk = MARKETS[key]
-        out["markets"][key] = {"label": mk["label"], "session": mk["session"],
-                               "last_price": ms.get("last_price"), "last_price_time": ms.get("last_price_time"),
-                               "range_high": ms["r_hi"], "range_low": ms["r_lo"], "range_ok": ms["range_ok"],
-                               "pending": ms["pending"]}
+        mk, info = MARKETS[key], ms.get("info") or {}
         if ms["position"]:
-            p = dict(ms["position"], market=key, label=mk["label"], strategy=STRATEGY["name"])
-            if ms.get("last_price"):
-                d = 1 if p["side"] == "LONG" else -1
-                p["open_pnl"] = round((ms["last_price"] - p["entry"]) * d * p["qty"], 2)
+            status = "In a trade"
+        elif ms["pending_entry"]:
+            status = "Buy signal: buying at next open"
+        elif not info:
+            status = "Waiting for data"
+        elif not info["uptrend"]:
+            status = "No trades: below 200-day average"
+        else:
+            status = f"Waiting for a dip (RSI below {SETTINGS['rsi_buy']})"
+        out["markets"][key] = {
+            "label": mk["label"], "status": status,
+            "details": [
+                ["Last price", f"{info.get('price', '—')} ({info.get('price_date', '—')})"],
+                ["Trend", ("Uptrend" if info.get("uptrend") else "Downtrend") + f" vs 200-day avg {info.get('trend_ma', '—')}"],
+                ["RSI(2)", f"{info.get('rsi', '—')} (buy below {SETTINGS['rsi_buy']})"],
+                ["5-day avg (exit level)", info.get("exit_ma", "—")],
+                ["Data as of", info.get("as_of", "—")],
+            ]}
+        if ms["position"]:
+            p = dict(ms["position"], market=key, label=mk["label"], strategy=STRATEGY["name"],
+                     pending_exit=ms["pending_exit"])
+            if info.get("price"):
+                p["open_pnl"] = round((info["price"] - p["entry"]) * p["qty"], 2)
             out["positions"].append(p)
     out["trades"] = sorted(trades, key=lambda t: t["entry_time"], reverse=True)
     return out
@@ -384,12 +362,12 @@ def main():
             with open(args.export, "w") as f:
                 json.dump(snapshot(), f)
         s = snapshot()["views"]
-        print(f"[{STATUS['last_check'][:19]}] balance {balance(STATE):,.2f} | "
-              f"paper trades {s['paper']['overall']['trades']} | all trades {s['all']['overall']['trades']} "
-              f"(win rate {s['all']['overall']['win_rate']}%)", flush=True)
+        print(f"[{STATUS['last_check'][:19]}] balance {balance(STATE):,.2f} | paper trades "
+              f"{s['paper']['overall']['trades']} | all trades {s['all']['overall']['trades']} "
+              f"(win rate {s['all']['overall']['win_rate']}%) | paused: {STATE['halted']}", flush=True)
         if args.once:
             break
-        time.sleep(POLL_SECONDS)
+        time.sleep(args.interval)
 
 
 STATE = None

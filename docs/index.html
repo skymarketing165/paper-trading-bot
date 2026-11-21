@@ -65,7 +65,7 @@ svg { width: 100%; height: 140px; display: block; }
     </div>
     <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">
       <div class="toggle" id="toggle">
-        <button data-v="all" class="on">All trades (incl. 60-day backfill)</button>
+        <button data-v="all" class="on">All trades (incl. 4-year backfill)</button>
         <button data-v="paper">Paper trades since start</button>
       </div>
       <span class="pill"><span class="dot" id="dot"></span><span id="status">Loading…</span></span>
@@ -100,8 +100,8 @@ svg { width: 100%; height: 140px; display: block; }
   </div>
 
   <div class="warn">
-    Data: Yahoo Finance gold (GC=F) and Nasdaq-100 (NQ=F) futures, 15-minute candles.
-    Fills include a simulated spread. Backfilled trades are a backtest of the last ~60 days and are kept separate from the paper account.
+    Data: Yahoo Finance daily candles for the Nasdaq-100 index (^NDX) and gold futures (GC=F). Fills include simulated costs.
+    Backfilled trades are a backtest of the last ~4 years and are kept separate from the paper account balance.
   </div>
 </div>
 
@@ -131,18 +131,18 @@ function render() {
   const s = data.status;
   $("dot").classList.toggle("err", !!s.last_error);
   $("status").textContent = s.last_error ? "Data error: " + s.last_error
-    : (data.halted ? "HALTED (max drawdown)" : "Running") + " · updated " + fmtTime(s.last_check) + " · next " + fmtTime(s.next_check);
+    : (data.halted ? "PAUSED by safety switch: " + data.halted : "Running") + " · updated " + fmtTime(s.last_check) + " · next " + fmtTime(s.next_check);
 
   $("kpis").innerHTML =
     kpi("Win rate", o.win_rate == null ? "—" : o.win_rate + "%", `${o.wins} wins · ${o.losses} losses`, "", true) +
-    kpi("Trades", o.trades, view === "paper" ? "since " + fmtTime(data.started_at) : "last ~60 days + paper") +
+    kpi("Trades", o.trades, view === "paper" ? "since " + fmtTime(data.started_at) : "~4-year backfill + paper") +
     kpi("Profit factor", o.profit_factor ?? "—", "gross win ÷ gross loss") +
     kpi("Net P/L", money(o.net_pnl), o.avg_r == null ? "" : "avg " + o.avg_r + "R per trade", cls(o.net_pnl)) +
     kpi("Max drawdown", o.max_dd_pct + "%", "limit " + data.settings.max_drawdown_pct + "%") +
     kpi("Paper balance", money(data.balance), "started " + money(data.initial_balance), cls(data.balance - data.initial_balance));
 
   $("sname").textContent = data.strategy.name;
-  $("ssum").textContent = data.strategy.summary + " · " + data.settings.reward_risk + "R target · " + data.settings.risk_pct + "% risk";
+  $("ssum").textContent = data.strategy.summary + " · " + data.settings.risk_pct + "% risk per trade · " + (data.strategy.evidence || "");
   $("srules").innerHTML = data.strategy.rules.map(r => `<li>${esc(r)}</li>`).join("");
 
   // equity curve
@@ -160,34 +160,32 @@ function render() {
   // markets
   $("markets").innerHTML = Object.entries(data.markets).map(([k, m]) => {
     const ms = v.by_market[k];
-    const rng = m.range_high != null ? `${m.range_low.toFixed(2)} – ${m.range_high.toFixed(2)} ${m.range_ok ? "✓" : "(skipped)"}` : "not formed yet";
     return `<div class="card"><h2>${esc(m.label)}</h2>
-      <div class="mrow"><span>Session</span><span>${esc(m.session)}</span></div>
+      <div class="mrow"><span>Status</span><span><b>${esc(m.status)}</b></span></div>
       <div class="mrow"><span>Win rate</span><span><b>${ms.win_rate == null ? "—" : ms.win_rate + "%"}</b> (${ms.wins}/${ms.trades})</span></div>
       <div class="mrow"><span>Net P/L</span><span class="${cls(ms.net_pnl)}">${money(ms.net_pnl)}</span></div>
       <div class="mrow"><span>Profit factor</span><span>${ms.profit_factor ?? "—"}</span></div>
-      <div class="mrow"><span>Last price</span><span>${m.last_price ?? "—"} <span class="sub">${fmtTime(m.last_price_time)}</span></span></div>
-      <div class="mrow"><span>Today's range</span><span>${rng}</span></div>
-      <div class="mrow"><span>Waiting to enter</span><span>${m.pending ? m.pending.side : "—"}</span></div></div>`;
+      ${m.details.map(([a, b]) => `<div class="mrow"><span>${esc(a)}</span><span>${esc(b)}</span></div>`).join("")}</div>`;
   }).join("");
 
   // positions
   $("positions").innerHTML = data.positions.length ? `<div class="tablewrap"><table>
-    <tr><th>Market</th><th>Strategy</th><th>Side</th><th>Opened</th><th>Entry</th><th>Stop</th><th>Target</th><th>Open P/L</th></tr>
+    <tr><th>Market</th><th>Strategy</th><th>Side</th><th>Opened</th><th>Entry</th><th>Safety stop</th><th>Days held</th><th>Exit</th><th>Open P/L</th></tr>
     ${data.positions.map(p => `<tr><td>${esc(p.label)}</td><td>${esc(p.strategy)}</td><td class="side-${p.side}">${p.side}</td>
-      <td>${fmtTime(p.entry_time)}</td><td>${p.entry.toFixed(2)}</td><td>${p.stop.toFixed(2)}</td><td>${p.target.toFixed(2)}</td>
+      <td>${esc(p.entry_date)}</td><td>${p.entry.toFixed(2)}</td><td>${p.stop.toFixed(2)}</td><td>${p.held}</td>
+      <td>${p.pending_exit ? "Selling at next open: " + esc(p.pending_exit) : "Holding until bounce or 10 days"}</td>
       <td class="${cls(p.open_pnl)}">${p.open_pnl == null ? "—" : money(p.open_pnl)}</td></tr>`).join("")}</table></div>`
-    : `<div class="empty">No open positions. The bot waits for the London open (gold) and New York open (NASDAQ) on weekdays.</div>`;
+    : `<div class="empty">No open positions. The bot checks every 15 minutes and buys only after a sharp dip in an uptrend, so it can go weeks without trading.</div>`;
 
   // trade log
-  $("trades").innerHTML = trades.length ? `<tr><th>Opened</th><th>Market</th><th>Strategy</th><th>Side</th><th>Entry</th><th>Stop</th>
-    <th>Target</th><th>Exit</th><th>Result</th><th>P/L</th><th>R</th><th>Type</th></tr>` +
-    trades.map(t => `<tr><td>${fmtTime(t.entry_time)}</td><td>${esc(t.label)}</td><td>${esc(t.strategy)}</td>
-      <td class="side-${t.side}">${t.side}</td><td>${t.entry}</td><td>${t.stop}</td><td>${t.target}</td><td>${t.exit}</td>
-      <td>${t.pnl > 0 ? "✅ " : "❌ "}${esc(t.reason)}</td><td class="${cls(t.pnl)}">${money(t.pnl)}</td>
-      <td class="${cls(t.r)}">${t.r > 0 ? "+" : ""}${t.r}R</td>
+  $("trades").innerHTML = trades.length ? `<tr><th>Bought</th><th>Sold</th><th>Market</th><th>Strategy</th><th>Why it bought</th><th>Entry</th>
+    <th>Exit</th><th>Days</th><th>Result</th><th>Return</th><th>P/L</th><th>Type</th></tr>` +
+    trades.map(t => `<tr><td>${esc(t.entry_time)}</td><td>${esc(t.exit_time)}</td><td>${esc(t.label)}</td><td>${esc(t.strategy)}</td>
+      <td>${esc(t.signal)}</td><td>${t.entry}</td><td>${t.exit}</td><td>${t.days}</td>
+      <td>${t.pnl > 0 ? "✅ " : "❌ "}${esc(t.reason)}</td><td class="${cls(t.ret_pct)}">${t.ret_pct > 0 ? "+" : ""}${t.ret_pct}%</td>
+      <td class="${cls(t.pnl)}">${money(t.pnl)}</td>
       <td><span class="badge ${t.mode}">${t.mode === "paper" ? "Paper" : "Backfill"}</span></td></tr>`).join("")
-    : `<tr><td class="empty">No trades yet${view === "paper" ? " since the bot started. Switch to “All trades” to see the 60-day backfill." : "."}</td></tr>`;
+    : `<tr><td class="empty">No trades yet${view === "paper" ? " since the bot started. Switch to “All trades” to see the backfill." : "."}</td></tr>`;
 }
 
 async function load() {

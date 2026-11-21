@@ -1,43 +1,48 @@
 # Paper Trading Bot
 
-Runs **Session Breakout v2** on gold and NASDAQ with a simulated $100,000 account.
-No broker and no real money: every trade is simulated.
+Runs **Trend Pullback (RSI-2)** on NASDAQ 100 and gold with a simulated $100,000 account.
+No broker, no real money: every trade is simulated. It runs every 15 minutes on GitHub Actions,
+so no computer needs to be on.
 
-## Start it
+**Dashboard:** https://skymarketing165.github.io/paper-trading-bot/
 
-```bash
-cd paper_bot
-.venv/bin/python bot.py
-```
+## The strategy
 
-Then open **http://localhost:8765** for the dashboard. Keep the terminal (and your Mac) running:
-the bot checks for new 15-minute candles every minute.
+Buys short, sharp dips inside a long-term uptrend and sells on the bounce.
 
-Start the paper account over from scratch with `--reset`.
+1. Only trade in an uptrend: daily close above the 200-day average (buys only)
+2. Buy when the 2-day RSI closes below 10; buy at the next day's open
+3. Sell when the close is back above the 5-day average (at the next open), or after 10 days
+4. Safety stop at 4× the daily ATR below the entry
+5. Risk 0.5% of the starting balance per trade
 
-## What the dashboard shows
+### Why this strategy
 
-- **Win rate**, wins/losses, profit factor, net P/L, max drawdown, paper balance
-- **Strategy in use** and its rules (every trade in the log is tagged with the strategy that took it)
-- Per-market stats for gold and NASDAQ, today's opening range, and whether a trade is about to trigger
-- Open positions with live P/L, and the full trade log
-- A toggle between **Paper trades since start** and **All trades**, which adds a backfill
-  (a backtest of the last ~60 days that runs on first start)
+`research.py` tested the earlier session-breakout strategy on ~2.5 years of hourly data: it **lost money**
+(the 70% win rate from 60 days of data didn't hold up). `research_daily.py` tested this pullback strategy on
+25 years of daily data, choosing settings on the older half and checking them on the newer half:
+
+| Market | Trades | Win rate (older / newer half) | Profit factor (all) |
+|---|---|---|---|
+| NASDAQ 100 | 203 | 67.8% / 68.1% | 1.42 |
+| Gold | 173 | 63.3% / 61.3% | 1.43 |
+
+It trades rarely (about 7–8 times a year per market) and only when the market is in an uptrend.
+
+## Safety switch (fully automatic)
+
+New trades are paused automatically, with the reason shown on the dashboard, if:
+- the paper account is down 8% from the start, or
+- after 20+ live paper trades, the win rate drops below 50% or the profit factor below 1.0.
+
+## Running it
+
+- **Cloud:** `.github/workflows/paper-bot.yml` runs `bot.py --once` every 15 minutes and publishes `docs/`.
+  Pause it from the repository's **Actions** tab → **Paper trading bot** → **⋯** → **Disable workflow**.
+- **Locally:** `.venv/bin/python bot.py`, then open http://localhost:8765. Add `--reset` to start the account over.
 
 ## Good to know
 
-- Prices come from Yahoo Finance gold (GC=F) and Nasdaq-100 (NQ=F) **futures**. They track XAUUSD/NAS100 closely
-  but aren't identical, and the data may be delayed by a few minutes.
-- Trades fill at the next candle's open, with a simulated spread (gold 0.30, NASDAQ 2.0).
-  If a candle touches both the stop and the target, the bot counts it as a loss.
-- The paper account's state is saved in `state.json`, so you can stop and restart the bot without losing anything.
-
-## Running 24/7 in the cloud (GitHub Actions)
-
-`.github/workflows/paper-bot.yml` runs the bot every 15 minutes on GitHub's servers, so your Mac can be off.
-Each run processes the new candles, saves the paper account to `state.json`, and publishes the dashboard
-to GitHub Pages (`docs/`). GitHub may delay scheduled runs by a few minutes. That doesn't change any fills,
-because trades are simulated from the candle data.
-
-To run it manually: GitHub repo → **Actions** → **Paper trading bot** → **Run workflow**.
-To pause it: **Actions** → **Paper trading bot** → **⋯** → **Disable workflow**.
+- Data: Yahoo Finance daily candles for ^NDX (Nasdaq-100 index) and GC=F (gold futures).
+- Fills at the next day's open with simulated costs (0.02% NASDAQ, 0.03% gold per side pair).
+- The "Backfill" trades are a backtest of the last ~4 years; they don't count toward the paper balance.
