@@ -1581,8 +1581,8 @@
   }
  ],
  "market": {
-  "price": 26780.68,
-  "price_time": "2026-11-23 11:30",
+  "price": 26800.5,
+  "price_time": "2026-11-23 12:30",
   "trend_ma": 28073.3,
   "daily_close": 25028.98,
   "uptrend": false
