@@ -5,16 +5,16 @@
  "initial_balance": 100000.0,
  "strats": {
   "DAILY": {
-   "last_done": "2026-11-25",
+   "last_done": "2026-11-27",
    "position": null,
    "pending_entry": null,
    "pending_exit": null,
    "last_exit_bar": "2026-11-10",
    "halted": null,
    "info": {
-    "rsi": 39.4,
-    "exit_ma": 26110.64,
-    "as_of": "2026-11-25"
+    "rsi": 72.9,
+    "exit_ma": 26152.51,
+    "as_of": "2026-11-27"
    }
   }
  },
@@ -1583,8 +1583,8 @@
  "market": {
   "price": 26579.32,
   "price_time": "2026-11-27 11:30",
-  "trend_ma": 28090.98,
-  "daily_close": 26046.9,
+  "trend_ma": 28098.6,
+  "daily_close": 26726.39,
   "uptrend": false
  }
 }
